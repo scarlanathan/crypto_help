@@ -17,7 +17,7 @@ Analyse technique multi-horizon des cryptomonnaies en live, basée sur `ccxt`. A
 5. [Événements spéciaux](#événements-spéciaux)
 6. [Modèle de Signal](#modèle-de-signal)
 7. [Backtest](#backtest)
-8. [Dashboard web + alertes mail](#dashboard-web--alertes-mail) (dont [Docker](#lancement-en-docker), [Render](#déploiement-sur-render) et [variables d'environnement](#variables-denvironnement))
+8. [Dashboard web + alertes mail](#dashboard-web--alertes-mail) (dont [Docker](#lancement-en-docker), [Render](#déploiement-sur-render), [Cloudflare en frontal](#cloudflare-en-frontal-dns--proxy) et [variables d'environnement](#variables-denvironnement))
 9. [Structure du projet](#structure-du-projet)
 10. [Provenance des analyses](#provenance-des-analyses)
 11. [Dépannage](#dépannage)
@@ -389,6 +389,29 @@ Trois points qui ne sont pas évidents :
 | **Plan `starter`, pas `free`** | Le plan gratuit met le service en veille après 15 min sans requête HTTP. Le worker de polling est alors tué et l'état en mémoire repart vide au réveil — ce qui vide aussi l'historique des transitions, donc les alertes mail. Un service dont tout l'intérêt est de tourner en continu a besoin d'un plan always-on. |
 
 Le port n'est pas à configurer : Render injecte `$PORT`, que `settings.py` lit en priorité sur le défaut `8000` (`HTTP_PORT` explicite reste prioritaire sur les deux).
+
+### Cloudflare en frontal (DNS + proxy)
+
+Cloudflare **n'héberge pas** cette application : ses runtimes (Workers, Pages) ne peuvent ni exécuter un processus permanent, ni charger les wheels CPython de pandas/numpy/ccxt, ni ouvrir une socket SMTP. En particulier, mettre `python webserver.py` comme *deploy command* de Workers Builds ne déploie rien : cette étape attend une commande Wrangler qui se termine, donc le build tourne jusqu'au **timeout de 20 minutes** puis échoue, en consommant 20 min de quota à chaque tentative.
+
+Cloudflare reste en revanche utile **devant** Render, pour le domaine, le TLS et la protection d'accès.
+
+1. **Render** → Settings → Custom Domains → ajouter `crypto.mondomaine.tld`. Render affiche l'enregistrement DNS attendu.
+2. **Cloudflare** → DNS → Records → `CNAME`, nom `crypto`, cible `<service>.onrender.com`.
+3. Laisser d'abord le nuage **gris (DNS only)** : Render valide le domaine et émet son certificat via une requête HTTP directe, que le proxy Cloudflare peut faire échouer. Une fois le certificat émis côté Render, repasser le nuage en **orange (Proxied)**.
+4. **SSL/TLS** → mode **Full (strict)**. Le mode `Flexible` provoque une boucle de redirection infinie : Render redirige HTTP vers HTTPS, tandis que Cloudflare rappelle l'origine en HTTP.
+5. **Rules** → Cache Rules → si le chemin commence par `/api/`, **Bypass cache**. Le dashboard interroge `/api/snapshot` toutes les 5 s (`webapp/static/index.html:288`) : une réponse mise en cache figerait l'affichage sur un snapshot périmé.
+
+### ⚠️ Protéger le dashboard avant de l'exposer
+
+**Aucun endpoint n'est authentifié.** Sur une URL publique, `POST /api/refresh` (`webapp/app.py:88`) permet à n'importe qui de déclencher un cycle d'analyse — soit environ 60 appels aux API d'exchange, répétables à volonté. Le `_cycle_lock` du worker sérialise les cycles mais n'empêche pas la file de grossir. Le risque concret est le **bannissement de l'IP du serveur par l'exchange**, qui rend le service inutilisable.
+
+Deux protections, à mettre en place **avant** de publier le domaine :
+
+| Solution | Effet |
+|---|---|
+| **Cloudflare Access** (Zero Trust, gratuit en usage personnel) | Place une authentification devant tout le hostname — code à usage unique envoyé par mail. C'est le plus simple et ça couvre aussi le dashboard lui-même. |
+| **Règle WAF** : bloquer `POST` sur `/api/refresh` | Ne protège que l'endpoint coûteux, laisse le dashboard en lecture publique. Le bouton « rafraîchir » de l'interface cesse de fonctionner. |
 
 ### Endpoints
 
