@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Crypto Analyzer — Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #161a22;
+    --panel-2: #1d222c;
+    --border: #2a3140;
+    --text: #e6e8ee;
+    --muted: #8a93a6;
+    --buy: #16a34a;
+    --sell: #dc2626;
+    --hold: #ca8a04;
+    --accent: #3b82f6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { padding: 16px 24px; border-bottom: 1px solid var(--border);
+           display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  .status { font-size: 13px; color: var(--muted); }
+  .status .ok { color: #16a34a; } .status .warn { color: #ca8a04; } .status .err { color: var(--sell); }
+  .btn { background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+         padding: 6px 12px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+  .btn:hover { border-color: var(--accent); }
+  main { padding: 24px; display: grid; gap: 24px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .panel h2 { margin: 0; padding: 12px 16px; font-size: 14px; font-weight: 600;
+              background: var(--panel-2); border-bottom: 1px solid var(--border); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { font-weight: 500; color: var(--muted); background: var(--panel-2); position: sticky; top: 0; }
+  tbody tr:hover { background: rgba(59, 130, 246, 0.05); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-weight: 600; font-size: 12px; }
+  .badge.BUY  { background: rgba(22, 163, 74, 0.15); color: var(--buy);  border: 1px solid var(--buy);  }
+  .badge.SELL { background: rgba(220, 38, 38, 0.15); color: var(--sell); border: 1px solid var(--sell); }
+  .badge.HOLD { background: rgba(202, 138, 4, 0.15); color: var(--hold); border: 1px solid var(--hold); }
+  .delta-up   { color: var(--buy); }
+  .delta-down { color: var(--sell); }
+  .reasons { color: var(--muted); font-size: 11px; max-width: 320px; }
+  .reasons div { padding: 1px 0; }
+  .levels { margin-top: 4px; font-size: 11px; font-variant-numeric: tabular-nums;
+            display: flex; flex-wrap: wrap; gap: 8px; }
+  .levels .lvl { color: var(--muted); }
+  .levels .lvl b { color: var(--text); font-weight: 500; }
+  .levels .lvl.entry b { color: var(--accent); }
+  .levels .lvl.sl b    { color: var(--sell); }
+  .levels .lvl.tp b    { color: var(--buy); }
+  /* Dans le tableau des paires : niveaux cachés tant que la cellule n'est pas dépliée */
+  td.has-levels { cursor: pointer; }
+  td.has-levels:hover { background: rgba(59, 130, 246, 0.08); }
+  td.has-levels .levels { display: none; }
+  td.has-levels.expanded .levels { display: flex; }
+  .chevron { margin-left: 6px; color: var(--muted); font-size: 10px;
+             display: inline-block; transition: transform 0.15s; }
+  td.has-levels.expanded .chevron { transform: rotate(180deg); color: var(--accent); }
+  .conf { display: inline-block; width: 56px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+  .conf > span { display: block; height: 100%; background: var(--accent); }
+  .events { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .event-tag { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px;
+               border-radius: 10px; font-size: 10px; line-height: 1.5;
+               background: rgba(255,255,255,0.04); border: 1px solid var(--border); }
+  .event-tag.bull { color: var(--buy);  border-color: rgba(22, 163, 74, 0.4); }
+  .event-tag.bear { color: var(--sell); border-color: rgba(220, 38, 38, 0.4); }
+  .event-tag.neut { color: var(--muted); }
+  .empty { padding: 32px; text-align: center; color: var(--muted); }
+  .transition { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .transition .ts { color: var(--muted); font-size: 11px; margin-right: 8px; }
+  .transition .arrow { color: var(--muted); margin: 0 6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>📈 Crypto Analyzer</h1>
+  <div class="status">
+    <span id="cycle-info">Chargement…</span>
+    <span style="margin: 0 12px">|</span>
+    <span id="mail-info"></span>
+  </div>
+  <button class="btn" onclick="forceRefresh()">⟳ Forcer un cycle</button>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Signaux par paire</h2>
+    <div style="overflow-x:auto"><table id="pairs-table">
+      <thead>
+        <tr>
+          <th>Symbole</th>
+          <th class="num">Prix</th>
+          <th class="num">Δ 24h</th>
+          <th>Court (15m)</th>
+          <th>Moyen (4h)</th>
+          <th>Long (1d)</th>
+          <th>MAJ</th>
+        </tr>
+      </thead>
+      <tbody><tr><td colspan="7" class="empty">En attente du premier cycle…</td></tr></tbody>
+    </table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Transitions récentes (50 dernières)</h2>
+    <div id="transitions"><div class="empty">Aucune transition pour l'instant.</div></div>
+  </section>
+</main>
+
+<script>
+async function fetchSnapshot() {
+  try {
+    const res = await fetch('/api/snapshot');
+    if (!res.ok) throw new Error(res.status);
+    return await res.json();
+  } catch (e) {
+    console.error('snapshot fail', e);
+    return null;
+  }
+}
+async function fetchHealth() {
+  try { return await (await fetch('/api/health')).json(); } catch { return null; }
+}
+
+async function forceRefresh() {
+  const r = await fetch('/api/refresh', { method: 'POST' });
+  if (r.ok) {
+    document.getElementById('cycle-info').innerHTML = '<span class="ok">⟳ Cycle déclenché…</span>';
+  }
+}
+
+function fmtPrice(v) {
+  if (v == null) return '—';
+  const abs = Math.abs(v);
+  if (abs >= 1000) return v.toLocaleString('fr-FR', { maximumFractionDigits: 2 });
+  if (abs >= 1)    return v.toFixed(4);
+  return v.toFixed(6);
+}
+function fmtTs(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return d.toLocaleTimeString('fr-FR');
+}
+function relativeTime(iso) {
+  if (!iso) return '';
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60)    return `il y a ${Math.floor(diff)}s`;
+  if (diff < 3600)  return `il y a ${Math.floor(diff / 60)}min`;
+  if (diff < 86400) return `il y a ${Math.floor(diff / 3600)}h`;
+  return new Date(iso).toLocaleString('fr-FR');
+}
+
+function eventsHtml(events) {
+  if (!events || events.length === 0) return '';
+  const tags = events.map(e => {
+    const cls = e.direction > 0 ? 'bull' : (e.direction < 0 ? 'bear' : 'neut');
+    return `<span class="event-tag ${cls}" title="${e.description}">${e.emoji || '◆'} ${e.name}</span>`;
+  }).join('');
+  return `<div class="events">${tags}</div>`;
+}
+
+function levelsHtml(s) {
+  // Entry/SL/TP ne sont calculés que pour BUY/SELL (HOLD => null).
+  if (s.entry == null || s.stop_loss == null || s.take_profit == null) return '';
+  const isBuy = s.action === 'BUY';
+  const slPct = ((s.stop_loss   - s.entry) / s.entry) * 100;
+  const tpPct = ((s.take_profit - s.entry) / s.entry) * 100;
+  const fmtPct = v => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+  return `<div class="levels">
+    <span class="lvl entry" title="Prix d'entrée suggéré (close de la dernière bougie complète)">Entry <b>${fmtPrice(s.entry)}</b></span>
+    <span class="lvl sl"    title="Stop loss (${isBuy ? 'sous' : 'au-dessus de'} l'entrée, calé sur l'ATR)">SL <b>${fmtPrice(s.stop_loss)}</b> (${fmtPct(slPct)})</span>
+    <span class="lvl tp"    title="Take profit (multiple d'ATR opposé au SL)">TP <b>${fmtPrice(s.take_profit)}</b> (${fmtPct(tpPct)})</span>
+  </div>`;
+}
+
+// Cellules dépliées (clic révèle Entry/SL/TP). Conservé entre les ticks de
+// rafraîchissement (toutes les 5s) pour ne pas refermer ce que l'utilisateur a ouvert.
+const expandedCells = new Set();
+function toggleCell(td, key) {
+  td.classList.toggle('expanded');
+  if (td.classList.contains('expanded')) expandedCells.add(key);
+  else expandedCells.delete(key);
+}
+
+function signalCell(s, key) {
+  if (!s) return '<td>—</td>';
+  const reasons = (s.reasons || []).slice(0, 3).map(r => `<div>• ${r}</div>`).join('');
+  const confPct = Math.round((s.confidence || 0) * 100);
+  const levels = levelsHtml(s);
+  const hasLevels = levels !== '';
+  const classes = [
+    hasLevels ? 'has-levels' : '',
+    hasLevels && expandedCells.has(key) ? 'expanded' : '',
+  ].filter(Boolean).join(' ');
+  const onclick = hasLevels ? `onclick="toggleCell(this, '${key}')"` : '';
+  const chevron = hasLevels
+    ? `<span class="chevron" title="Cliquer pour ${expandedCells.has(key) ? 'masquer' : 'voir'} Entry / SL / TP">▾</span>`
+    : '';
+  return `<td class="${classes}" ${onclick}>
+    <span class="badge ${s.action}">${s.action}</span>
+    <span style="margin-left:8px; font-variant-numeric: tabular-nums">${(s.score >= 0 ? '+' : '') + s.score.toFixed(2)}</span>
+    <span class="conf" style="margin-left:6px" title="confidence ${confPct}%"><span style="width:${confPct}%"></span></span>
+    ${chevron}
+    ${eventsHtml(s.events)}
+    ${levels}
+    <div class="reasons">${reasons}</div>
+  </td>`;
+}
+
+function renderPairs(snap) {
+  const tbody = document.querySelector('#pairs-table tbody');
+  const entries = Object.entries(snap.pairs || {});
+  if (entries.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">En attente du premier cycle…</td></tr>';
+    return;
+  }
+  tbody.innerHTML = entries.map(([sym, data]) => {
+    const t = data.ticker || {};
+    const delta = t.change_24h_pct;
+    const deltaClass = delta == null ? '' : (delta >= 0 ? 'delta-up' : 'delta-down');
+    const deltaStr = delta == null ? '—' : `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}%`;
+    const sig = data.signals || {};
+    return `<tr>
+      <td><strong>${sym}</strong></td>
+      <td class="num">${fmtPrice(t.last)}</td>
+      <td class="num ${deltaClass}">${deltaStr}</td>
+      ${signalCell(sig.short,  sym + '|short')}
+      ${signalCell(sig.medium, sym + '|medium')}
+      ${signalCell(sig.long,   sym + '|long')}
+      <td style="color:var(--muted);font-size:11px">${relativeTime(data.updated_at)}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderTransitions(snap) {
+  const container = document.getElementById('transitions');
+  const list = (snap.recent_transitions || []).slice().reverse();
+  if (list.length === 0) {
+    container.innerHTML = '<div class="empty">Aucune transition pour l\'instant.</div>';
+    return;
+  }
+  container.innerHTML = list.map(t => `
+    <div class="transition">
+      <span class="ts">${fmtTs(t.ts)}</span>
+      <strong>${t.symbol}</strong> <span style="color:var(--muted)">(${t.horizon})</span>
+      <span class="badge ${t.previous_action}">${t.previous_action}</span>
+      <span class="arrow">→</span>
+      <span class="badge ${t.new_action}">${t.new_action}</span>
+      <span style="margin-left:8px; color:var(--muted)">
+        score ${(t.score >= 0 ? '+' : '') + t.score.toFixed(2)}, conf ${(t.confidence * 100).toFixed(0)}%
+      </span>
+      ${levelsHtml({ action: t.new_action, entry: t.entry, stop_loss: t.stop_loss, take_profit: t.take_profit })}
+    </div>`).join('');
+}
+
+async function tick() {
+  const [snap, health] = await Promise.all([fetchSnapshot(), fetchHealth()]);
+  if (snap) {
+    renderPairs(snap);
+    renderTransitions(snap);
+  }
+  if (health) {
+    const cycleInfo = document.getElementById('cycle-info');
+    const errClass = health.error_count > 0 ? 'warn' : 'ok';
+    cycleInfo.innerHTML = `
+      <span class="${errClass}">Cycle #${health.cycle_count}</span> ·
+      dernier ${relativeTime(health.last_cycle_ts)} ·
+      ${health.last_cycle_duration_s ? health.last_cycle_duration_s.toFixed(2) + 's' : '—'}
+      ${health.error_count > 0 ? ` · <span class="err">${health.error_count} erreur(s)</span>` : ''}
+    `;
+    const mailInfo = document.getElementById('mail-info');
+    if (health.settings.mail_enabled) {
+      mailInfo.innerHTML = health.settings.alert_dry_run
+        ? '<span class="warn">📧 Dry-run</span>'
+        : `<span class="ok">📧 → ${health.settings.alert_to.join(', ')}</span>`;
+    } else {
+      mailInfo.innerHTML = '<span class="warn">📧 Désactivé (SMTP non configuré)</span>';
+    }
+  }
+}
+
+tick();
+setInterval(tick, 5000);   // rafraîchit l'UI toutes les 5s
+</script>
+
+</body>
+</html>

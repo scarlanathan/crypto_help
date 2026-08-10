@@ -1,0 +1,35 @@
+# Lancement recommandé :
+#
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# Le dashboard est sur http://127.0.0.1:8000
+services:
+  crypto-analyzer:
+    build: .
+    image: crypto-analyzer
+    container_name: crypto-analyzer
+
+    # Secrets et réglages lus depuis .env (jamais copié dans l'image).
+    # required: false -> démarre quand même si le fichier n'existe pas.
+    env_file:
+      - path: .env
+        required: false
+
+    # `environment` a priorité sur `env_file` : indispensable ici, car .env
+    # contient HTTP_HOST=127.0.0.1 (bon pour un lancement local, mais dans un
+    # conteneur ça rend le service injoignable depuis l'hôte — et le
+    # healthcheck passerait quand même puisqu'il teste depuis l'intérieur).
+    environment:
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8000
+
+    ports:
+      - "127.0.0.1:8000:8000"   # exposé sur la loopback de l'hôte uniquement
+
+    restart: unless-stopped
+
+    # L'état (paires, transitions) vit en mémoire : un redémarrage repart d'un
+    # snapshot vide et le 1er cycle ne produit aucune transition (rien à
+    # comparer). Pas de volume nécessaire.
+    stop_grace_period: 20s

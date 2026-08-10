@@ -1,0 +1,33 @@
+# Environnement virtuel local (des centaines de Mo, et des binaires Windows
+# inutilisables dans une image Linux).
+venv/
+.venv/
+
+# Secrets : le .env ne DOIT jamais entrer dans l'image (elle peut être poussée
+# sur un registry). On le passe au runtime via --env-file / env_file.
+.env
+*.env
+!.env.example
+
+# Artefacts Python
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Outillage / docs non nécessaires à l'exécution
+.git/
+.gitignore
+.idea/
+.vscode/
+README.md
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Sorties de travail
+snapshot.json
+*.log
