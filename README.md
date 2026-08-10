@@ -384,7 +384,7 @@ Trois points qui ne sont pas évidents :
 
 | Sujet | Pourquoi ça compte |
 |---|---|
-| **`HTTP_HOST=0.0.0.0`** | Render (comme Railway, Fly, Heroku) place un routeur en frontal. Écouter sur `127.0.0.1` fait démarrer le service **sans aucune erreur** tout en le rendant définitivement injoignable — la panne ressemble à un build cassé. Le blueprint force la bonne valeur, et `settings.py` bascule seul sur `0.0.0.0` dès que `$PORT` est présent. |
+| **Ne pas recopier `HTTP_HOST` / `HTTP_PORT`** | Ces deux variables du `.env` ne valent qu'en local. Collées dans le dashboard de l'hébergeur (Render propose un « Add from .env » qui rend l'erreur très facile), elles écrasent les valeurs de l'image : le service écoute sur la loopback, démarre **sans la moindre erreur**, et reste injoignable. Depuis, `settings.py` **corrige d'office** un `HTTP_HOST` loopback en hébergement et le signale au démarrage ; un `HTTP_PORT` qui masque `$PORT` déclenche un avertissement (risque de 502, le routeur pointant vers `$PORT`). Le plus simple reste de ne définir ni l'un ni l'autre. |
 | **Région `frankfurt`** | Binance bloque une large part des plages IP de datacenters US. Depuis une région américaine, `fetch.py` tombe en fallback sur Kraken — qui ne cote ni `BNB/BTC` ni `SUSHI/USDT` : ces paires disparaissent du dashboard avec un simple `WARNING` dans les logs. |
 | **Plan `starter`, pas `free`** | Le plan gratuit met le service en veille après 15 min sans requête HTTP. Le worker de polling est alors tué et l'état en mémoire repart vide au réveil — ce qui vide aussi l'historique des transitions, donc les alertes mail. Un service dont tout l'intérêt est de tourner en continu a besoin d'un plan always-on. |
 

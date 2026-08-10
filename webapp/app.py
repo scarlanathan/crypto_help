@@ -66,7 +66,10 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-@app.get("/")
+# HEAD en plus de GET : FastAPI n'ajoute pas HEAD automatiquement (contrairement
+# aux routes Starlette nues), et les sondes des hebergeurs et des services
+# d'uptime l'utilisent couramment — sans quoi elles recoivent un 405.
+@app.api_route("/", methods=["GET", "HEAD"])
 async def index():
     index_html = STATIC_DIR / "index.html"
     if not index_html.exists():
@@ -94,7 +97,7 @@ async def refresh() -> dict:
     return {"status": "queued"}
 
 
-@app.get("/api/health")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 async def health() -> dict:
     s = app.state.settings
     snap = app.state.store.to_dict()

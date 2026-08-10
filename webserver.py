@@ -29,35 +29,51 @@ import uvicorn
 from webapp.settings import load
 
 
-def _warn_if_unreachable_in_container(host: str) -> None:
-    """Prévient si on écoute sur la loopback alors qu'on tourne en conteneur.
+def _report_host_override(overridden_from: str) -> None:
+    """Explique la correction d'un HTTP_HOST loopback en hébergement distant.
 
-    Cas piégeux : `.env` contient HTTP_HOST=127.0.0.1 (correct en local) et
-    `docker run --env-file .env` écrase le HTTP_HOST=0.0.0.0 de l'image. Le
-    service démarre, le healthcheck passe (il teste depuis l'intérieur), mais
-    le port publié ne répond jamais. Sans ce message, le diagnostic est long.
+    Cas piégeux, rencontre deux fois : un `.env` local contient
+    HTTP_HOST=127.0.0.1 (correct sur un poste de dev), puis il est recopie tel
+    quel dans le dashboard de l'hebergeur ou passe via --env-file, ou il
+    ecrase le HTTP_HOST=0.0.0.0 de l'image. Le service demarre, le healthcheck
+    interne passe, mais rien n'y accede jamais depuis l'exterieur.
+
+    settings.load() corrige desormais la valeur ; on se contente de le dire,
+    pour qu'une config trompeuse reste visible dans les logs.
     """
-    hosted = (
-        Path("/.dockerenv").exists()
-        or os.environ.get("KUBERNETES_SERVICE_HOST")
-        # Render, Railway, Fly, Heroku… imposent le port via $PORT. Ce cas
-        # manquait : sur Cloudflare le service a demarre sur 127.0.0.1 sans
-        # aucun signal, et la panne ressemblait a un build casse.
-        or os.environ.get("PORT")
+    if not overridden_from:
+        return
+    print(
+        f"NOTE: HTTP_HOST={overridden_from} ignore -> ecoute forcee sur 0.0.0.0.\n"
+        f"      La loopback est isolee en conteneur / derriere un PaaS : le\n"
+        f"      service aurait demarre sans erreur en restant injoignable.\n"
+        f"      Retirez HTTP_HOST de la config de l'hebergeur pour lever ce message.",
+        flush=True,
     )
-    if hosted and host in ("127.0.0.1", "localhost", "::1"):
+
+
+def _warn_if_port_shadows_platform(port: int) -> None:
+    """Signale un HTTP_PORT qui masque le $PORT impose par l'hebergeur.
+
+    Contrairement au cas loopback, ce n'est pas systematiquement fatal (Render
+    sait detecter le port reellement ouvert), mais le routeur cible $PORT : un
+    ecart donne un 502 sans trace cote application. On avertit sans ecraser,
+    car un port choisi peut etre legitime hors PaaS.
+    """
+    platform_port = os.environ.get("PORT", "")
+    if platform_port and platform_port.isdigit() and int(platform_port) != port:
         print(
-            f"ATTENTION: HTTP_HOST={host} sur un hebergeur distant -> le service "
-            f"sera injoignable de l'exterieur malgre le port publie.\n"
-            f"           Corrigez avec HTTP_HOST=0.0.0.0 (docker compose et "
-            f"render.yaml le forcent deja).",
+            f"ATTENTION: HTTP_PORT={port} masque le PORT={platform_port} impose par\n"
+            f"           l'hebergeur, dont le routeur pointe vers {platform_port}.\n"
+            f"           Retirez HTTP_PORT de la config pour eviter un 502.",
             flush=True,
         )
 
 
 def main() -> None:
     s = load()
-    _warn_if_unreachable_in_container(s.http_host)
+    _report_host_override(s.http_host_overridden_from)
+    _warn_if_port_shadows_platform(s.http_port)
     print(f"Crypto Analyzer demarre sur http://{s.http_host}:{s.http_port}")
     print(f"  - Intervalle: {s.poll_interval}s | Paires: {len(s.watched_symbols)} | Exchange: {s.exchange_id}")
     mail_status = "dry-run" if s.alert_dry_run else ("active" if s.mail_enabled else "desactive")
