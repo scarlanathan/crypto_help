@@ -1,35 +1,97 @@
 # Crypto analysis scripts
 
-Analyse multi-horizon des cryptomonnaies en live, basée sur `ccxt`. Approche dérivée de `../CryptoViz/services/data-collector` (mêmes exchanges, même librairie) mais en **mode scripts** synchrones — pas de Kafka/Redis. Trois stratégies (court/moyen/long terme), un moteur de backtest walk-forward, et une CLI lisible.
+Analyse technique multi-horizon des cryptomonnaies en live, basée sur `ccxt`. Approche dérivée de `../CryptoViz/services/data-collector` (mêmes exchanges, même librairie) mais en **mode scripts** synchrones — pas de Kafka/Redis. Trois stratégies (court/moyen/long terme), un moteur de backtest walk-forward, une CLI lisible et un dashboard web avec alertes mail.
+
+**Aucune clé API requise** : tout passe par les endpoints publics des exchanges. Les seuls secrets éventuels sont ceux du SMTP si vous activez les alertes mail.
+
+> ⚠️ Outil d'expérimentation technique. **Ce ne sont pas des conseils financiers** — voir [Limitations & disclaimer](#limitations--disclaimer).
 
 ---
 
 ## Sommaire
 
-1. [Installation](#installation)
-2. [Utilisation](#utilisation)
-3. [Stratégies](#stratégies)
-4. [Modèle de Signal](#modèle-de-signal)
-5. [Backtest](#backtest)
-6. [Dashboard web + alertes mail](#dashboard-web--alertes-mail) (dont [Docker](#lancement-en-docker))
-7. [Structure du projet](#structure-du-projet)
-8. [Provenance des analyses](#provenance-des-analyses)
-9. [Historique des audits / corrections](#historique-des-audits--corrections)
-10. [Exemple d'analyse live](#exemple-danalyse-live)
-11. [Limitations & disclaimer](#limitations--disclaimer)
+1. [Démarrage rapide](#démarrage-rapide)
+2. [Installation](#installation)
+3. [Utilisation](#utilisation) (dont [référence CLI](#référence-cli))
+4. [Stratégies](#stratégies)
+5. [Événements spéciaux](#événements-spéciaux)
+6. [Modèle de Signal](#modèle-de-signal)
+7. [Backtest](#backtest)
+8. [Dashboard web + alertes mail](#dashboard-web--alertes-mail) (dont [Docker](#lancement-en-docker) et [variables d'environnement](#variables-denvironnement))
+9. [Structure du projet](#structure-du-projet)
+10. [Provenance des analyses](#provenance-des-analyses)
+11. [Dépannage](#dépannage)
+12. [Historique des audits / corrections](#historique-des-audits--corrections)
+13. [Exemple d'analyse live](#exemple-danalyse-live)
+14. [Limitations & disclaimer](#limitations--disclaimer)
+
+---
+
+## Démarrage rapide
+
+```powershell
+git clone https://github.com/scarlanathan/crypto_help.git
+cd crypto_help
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python analyze.py --symbol BTC/USDT
+```
+
+Trois usages possibles selon ce que vous cherchez :
+
+| Objectif | Commande | Besoin d'un `.env` ? |
+|---|---|---|
+| Voir les signaux actuels en une fois | `python analyze.py` | Non |
+| Évaluer une stratégie sur l'historique | `python backtest.py --symbol BTC/USDT --horizon long` | Non |
+| Surveiller en continu + recevoir des mails | `python webserver.py` | Oui (SMTP) |
 
 ---
 
 ## Installation
 
+### Prérequis
+
+- **Python 3.13** (version utilisée en dev et dans l'image Docker ; les versions plus anciennes ne sont pas testées).
+- Un accès réseau sortant en HTTPS vers l'exchange et vers `alternative.me` (Fear & Greed).
+- Optionnel : **Docker** si vous préférez lancer le dashboard en conteneur.
+
+### Windows (PowerShell)
+
 ```powershell
-cd C:\Users\Nathan\Desktop\crypto
+git clone https://github.com/scarlanathan/crypto_help.git
+cd crypto_help
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-Aucune clé API requise : on utilise les **endpoints publics** de l'exchange (par défaut Binance, fallback automatique Kraken/Coinbase/OKX si KO).
+### Linux / macOS
+
+```bash
+git clone https://github.com/scarlanathan/crypto_help.git
+cd crypto_help
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### Dépendances
+
+Toutes les versions sont **pinnées** dans `requirements.txt` (audit v5) pour que le comportement soit reproductible :
+
+| Paquet | Version | Rôle |
+|---|---|---|
+| `ccxt` | 4.5.54 | Accès unifié aux API publiques des exchanges |
+| `pandas` | 3.0.3 | Manipulation des séries OHLCV |
+| `numpy` | 2.4.6 | Calcul vectoriel sous-jacent |
+| `rich` | 15.0.0 | Rendu des tables en console |
+| `fastapi` | 0.136.3 | API + dashboard web |
+| `uvicorn[standard]` | 0.48.0 | Serveur ASGI |
+
+Aucune dépendance à TA-Lib : les indicateurs sont réimplémentés en pandas/numpy purs (`indicators.py`).
+
+Aucune clé API requise pour l'analyse : on utilise les **endpoints publics** de l'exchange (par défaut Binance, fallback automatique Kraken/Coinbase/OKX si KO).
 
 ## Utilisation
 
@@ -40,8 +102,12 @@ python analyze.py
 # Une paire spécifique
 python analyze.py --symbol BTC/USDT
 
-# Un seul horizon
+# Plusieurs paires : répéter le flag
+python analyze.py --symbol BTC/USDT --symbol ETH/USDT
+
+# Un seul horizon (répétable aussi)
 python analyze.py --horizon short
+python analyze.py --horizon short --horizon medium
 
 # Sortie JSON (pour piper vers jq, dashboard, etc.)
 python analyze.py --json > snapshot.json
@@ -49,6 +115,31 @@ python analyze.py --json > snapshot.json
 # Changer d'exchange
 python analyze.py --exchange kraken
 ```
+
+### Référence CLI
+
+**`analyze.py`** — snapshot des signaux courants.
+
+| Flag | Type | Défaut | Description |
+|---|---|---|---|
+| `--symbol` | str, **répétable** | `SYMBOLS` de `config.py` (12 paires) | Symbole(s) à analyser, ex. `BTC/USDT` |
+| `--horizon` | `short` \| `medium` \| `long`, **répétable** | les 3 | Horizon(s) à calculer |
+| `--exchange` | str | `binance` | Exchange ccxt (`kraken`, `coinbase`, `okx`, …) |
+| `--json` | flag | off | Sortie JSON brute au lieu de la table `rich` |
+
+**`backtest.py`** — évaluation walk-forward d'une stratégie sur une paire.
+
+| Flag | Type | Défaut | Description |
+|---|---|---|---|
+| `--symbol` | str | **requis** | Paire unique, ex. `BTC/USDT` |
+| `--horizon` | `short` \| `medium` \| `long` | **requis** | Stratégie à tester |
+| `--exchange` | str | `binance` | Exchange ccxt |
+| `--fee` | float | `0.001` (0.10 %) | Frais **par côté** — comptés à l'entrée *et* à la sortie |
+| `--slippage` | float | `0.0005` (0.05 %) | Slippage par côté, toujours hostile |
+| `--max-bars` | int | défaut de la stratégie | Durée max d'un trade avant sortie `TIMEOUT` |
+| `--allow-shorts` | flag | off | Simule aussi les `SELL` en long terme (long-only par défaut depuis l'audit v6) |
+
+> Contrairement à `analyze.py`, `backtest.py` ne prend **qu'une paire et qu'un horizon** par exécution — bouclez en shell pour comparer plusieurs paires.
 
 > **Note Windows** : si la table `rich` plante sur certains caractères Unicode (`•`, `≤`, `⚠`) sur cmd.exe legacy, utilisez `--json` ou Windows Terminal moderne.
 
@@ -204,20 +295,38 @@ Une app FastAPI sert un dashboard temps réel avec :
 ### Configuration (`.env`)
 
 ```powershell
-# Crée ton .env à partir du template
+# Windows — crée ton .env à partir du template
 Copy-Item .env.example .env
 notepad .env
 ```
 
-À renseigner au minimum :
+```bash
+# Linux / macOS
+cp .env.example .env
+```
 
-| Variable | Description |
-|---|---|
-| `SMTP_USER` | Adresse Gmail expéditeur |
-| `SMTP_PASSWORD` | App password Gmail (16 caractères — pas le mot de passe normal !). Génération : https://myaccount.google.com/apppasswords après activation de la double authentification |
-| `ALERT_TO` | Destinataire des alertes (défaut : `nathanhan02@gmail.com`) |
-| `POLL_INTERVAL_SECONDS` | Intervalle entre cycles (défaut `300` = 5 min) |
-| `ALERT_DRY_RUN` | Mettre `1` pour tester sans envoyer de mail réel |
+Le `.env` est **exclu du dépôt** par `.gitignore` et du contexte de build par `.dockerignore` — il ne doit jamais être commité. Seul `.env.example` est versionné.
+
+Le chargement est fait par `webapp/settings.py` sans dépendance à `python-dotenv`, via `os.environ.setdefault` : **une variable déjà présente dans l'environnement a la priorité sur le `.env`**.
+
+#### Variables d'environnement
+
+| Variable | Défaut (code) | Description |
+|---|---|---|
+| `POLL_INTERVAL_SECONDS` | `300` | Intervalle entre deux cycles d'analyse. La stratégie la plus courte étant en 15m, descendre sous 60 s est inutile. |
+| `WATCHED_SYMBOLS` | `SYMBOLS` de `config.py` | Paires à suivre, séparées par des virgules. Vide → valeurs de `config.py`. |
+| `EXCHANGE_ID` | `binance` | Exchange ccxt de départ (fallback automatique si indisponible). |
+| `SMTP_HOST` | `smtp.gmail.com` | Serveur SMTP d'envoi. |
+| `SMTP_PORT` | `587` | Port SMTP (STARTTLS). |
+| `SMTP_USER` | *(vide)* | Adresse expéditrice. |
+| `SMTP_PASSWORD` | *(vide)* | **App password** Gmail de 16 caractères — pas le mot de passe du compte. À générer sur https://myaccount.google.com/apppasswords après activation de la validation en 2 étapes. |
+| `ALERT_TO` | *(vide)* | Destinataire(s) des alertes, séparés par des virgules. |
+| `ALERT_MIN_INTERVAL_SECONDS` | `60` | Anti-spam : délai minimum entre 2 mails ; les transitions arrivant dans la fenêtre sont regroupées. |
+| `ALERT_DRY_RUN` | `0` | `1` → les mails sont loggés au lieu d'être envoyés. |
+| `HTTP_HOST` | `127.0.0.1` | Interface d'écoute. **`0.0.0.0` obligatoire en Docker** (voir plus bas). |
+| `HTTP_PORT` | `8000` | Port d'écoute. |
+
+Les alertes ne sont actives que si `SMTP_USER`, `SMTP_PASSWORD` et `ALERT_TO` sont tous renseignés — ou si `ALERT_DRY_RUN=1`. Sinon le dashboard fonctionne normalement, simplement sans mail.
 
 ### Lancement
 
@@ -301,7 +410,7 @@ Les transitions n'apparaissent qu'à partir du **2e cycle** (au 1er, il n'y a pa
 ## Structure du projet
 
 ```
-crypto/
+crypto_help/
 ├── config.py                  # paires suivies, timeframes, paramètres des indicateurs
 ├── fetch.py                   # accès live ccxt (fallback exchange + pagination + drop bougie en cours)
 ├── indicators.py              # RSI, MACD, EMA/SMA, Bollinger Bands, ATR (pandas pur)
@@ -326,10 +435,13 @@ crypto/
 ├── Dockerfile                 # image du dashboard (multi-stage, non-root)
 ├── docker-compose.yml         # lancement recommandé (gère le .env + HTTP_HOST)
 ├── .dockerignore              # exclut venv/ et .env du contexte de build
-├── .env.example
-├── requirements.txt
+├── .gitignore                 # exclut venv/, __pycache__/ et .env du dépôt
+├── .env.example               # template de configuration (le .env réel n'est pas versionné)
+├── requirements.txt           # dépendances pinnées
 └── README.md
 ```
+
+**Sens de lecture conseillé** si vous découvrez le code : `config.py` (ce qui est suivi) → `indicators.py` (les briques de calcul) → `strategies/_utils.py` (le `ScoreBuilder` qui agrège) → une stratégie concrète (`strategies/long_term.py` est la plus lisible) → `backtest.py` (comment tout est évalué).
 
 ## Provenance des analyses
 
@@ -341,7 +453,24 @@ Les signaux **ne viennent d'aucune IA, d'aucun service tiers d'analyse**. Tout e
 
 Le code des règles est lisible en quelques minutes — pas de boîte noire. Pour comprendre un signal, lire `sig.reasons` (la liste triée des indicateurs qui ont contribué).
 
-**Ce que les stratégies ignorent volontairement** : news, sentiment, on-chain, funding rate, open interest, ordre book, macro. Outil purement chartiste.
+**Ce que les stratégies ignorent volontairement** : news, on-chain, funding rate, open interest, carnet d'ordres, macro. Outil essentiellement chartiste — la **seule** entrée non-chartiste est le Fear & Greed Index, appliqué au seul horizon long et avec un poids faible (voir [Événements spéciaux](#événements-spéciaux)).
+
+## Dépannage
+
+| Symptôme | Cause probable | Solution |
+|---|---|---|
+| `RuntimeError: Aucun exchange disponible: …` | Binance **et** les 3 fallbacks (Kraken/Coinbase/OKX) ont échoué : réseau coupé, proxy, géo-restriction | Vérifier la connectivité HTTPS sortante ; forcer un exchange atteignable avec `--exchange kraken` ou `EXCHANGE_ID=kraken`. |
+| `RuntimeError: L'exchange X ne supporte pas fetchOHLCV` | Exchange choisi sans endpoint OHLCV public | Repasser sur `binance` / `kraken`. |
+| `ValueError: Timeframe X non reconnu` | Timeframe absent du mapping de `fetch.py` | Utiliser les timeframes de `STRATEGY_TIMEFRAMES` (`15m`, `4h`, `1d`). |
+| Erreur de symbole sur une paire | La paire n'existe pas sur cet exchange (les cross type `SOL/ETH` ne sont pas cotés partout) | Choisir un exchange qui la cote, ou retirer la paire de `WATCHED_SYMBOLS`. |
+| Table `rich` illisible / `UnicodeEncodeError` | Console Windows legacy (cmd.exe) | Utiliser Windows Terminal, ou `--json`. |
+| `Aucun trade généré (signal toujours HOLD ou warmup insuffisant)` | Soit l'historique est trop court (warmup 250, ou 500 en long), soit aucun signal n'a franchi le seuil | Vérifier que l'exchange fournit assez d'historique sur ce timeframe — les paires récentes n'ont pas 4 ans de daily. En **court terme**, 0 trade est le comportement **attendu** : le filtre de régime SMA200 + seuil 0.70 rejettent la quasi-totalité des signaux (cf. audit v6). |
+| Aucun mail reçu | `SMTP_USER`/`SMTP_PASSWORD`/`ALERT_TO` incomplets, ou `ALERT_DRY_RUN=1` | Vérifier `GET /api/health` ; tester d'abord en `ALERT_DRY_RUN=1` et lire les logs. |
+| SMTP `535 Authentication failed` | Mot de passe de compte utilisé au lieu d'un App password | Générer un App password Gmail (16 caractères, 2FA requise). |
+| Aucune transition au 1er cycle | Comportement **attendu** | Une transition est un *changement* entre deux cycles ; il faut au moins 2 cycles. |
+| Conteneur `healthy` mais port publié muet | `HTTP_HOST=127.0.0.1` hérité du `.env` | Forcer `-e HTTP_HOST=0.0.0.0` (cf. [Docker](#lancement-en-docker)) ou utiliser `docker compose`. |
+
+Le point de diagnostic le plus utile est `GET /api/health` : il expose les settings effectifs, le nombre de cycles effectués et la dernière erreur rencontrée par le worker.
 
 ## Historique des audits / corrections
 
