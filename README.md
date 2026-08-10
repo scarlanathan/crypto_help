@@ -17,7 +17,7 @@ Analyse technique multi-horizon des cryptomonnaies en live, basée sur `ccxt`. A
 5. [Événements spéciaux](#événements-spéciaux)
 6. [Modèle de Signal](#modèle-de-signal)
 7. [Backtest](#backtest)
-8. [Dashboard web + alertes mail](#dashboard-web--alertes-mail) (dont [Docker](#lancement-en-docker) et [variables d'environnement](#variables-denvironnement))
+8. [Dashboard web + alertes mail](#dashboard-web--alertes-mail) (dont [Docker](#lancement-en-docker), [Render](#déploiement-sur-render) et [variables d'environnement](#variables-denvironnement))
 9. [Structure du projet](#structure-du-projet)
 10. [Provenance des analyses](#provenance-des-analyses)
 11. [Dépannage](#dépannage)
@@ -372,6 +372,24 @@ L'état (paires, transitions) vit **en mémoire** : aucun volume n'est nécessai
 
 **Vérifié au build du 2026-08-07** : image construite, conteneur démarré, premier cycle en 6.2 s sur 2 paires, 0 erreur, healthcheck `healthy`, signaux identiques au run local.
 
+### Déploiement sur Render
+
+Le dépôt contient un blueprint `render.yaml` qui réutilise le `Dockerfile` existant.
+
+1. Pousser le dépôt sur GitHub.
+2. Render → **New** → **Blueprint** → sélectionner le dépôt.
+3. Render demande les valeurs marquées `sync: false` (`SMTP_USER`, `SMTP_PASSWORD`, `ALERT_TO`) : elles sont stockées chiffrées et **ne sont jamais dans le dépôt**.
+
+Trois points qui ne sont pas évidents :
+
+| Sujet | Pourquoi ça compte |
+|---|---|
+| **`HTTP_HOST=0.0.0.0`** | Render (comme Railway, Fly, Heroku) place un routeur en frontal. Écouter sur `127.0.0.1` fait démarrer le service **sans aucune erreur** tout en le rendant définitivement injoignable — la panne ressemble à un build cassé. Le blueprint force la bonne valeur, et `settings.py` bascule seul sur `0.0.0.0` dès que `$PORT` est présent. |
+| **Région `frankfurt`** | Binance bloque une large part des plages IP de datacenters US. Depuis une région américaine, `fetch.py` tombe en fallback sur Kraken — qui ne cote ni `BNB/BTC` ni `SUSHI/USDT` : ces paires disparaissent du dashboard avec un simple `WARNING` dans les logs. |
+| **Plan `starter`, pas `free`** | Le plan gratuit met le service en veille après 15 min sans requête HTTP. Le worker de polling est alors tué et l'état en mémoire repart vide au réveil — ce qui vide aussi l'historique des transitions, donc les alertes mail. Un service dont tout l'intérêt est de tourner en continu a besoin d'un plan always-on. |
+
+Le port n'est pas à configurer : Render injecte `$PORT`, que `settings.py` lit en priorité sur le défaut `8000` (`HTTP_PORT` explicite reste prioritaire sur les deux).
+
 ### Endpoints
 
 | Endpoint | Description |
@@ -434,6 +452,7 @@ crypto_help/
 ├── webserver.py               # entry point uvicorn
 ├── Dockerfile                 # image du dashboard (multi-stage, non-root)
 ├── docker-compose.yml         # lancement recommandé (gère le .env + HTTP_HOST)
+├── render.yaml                # blueprint de déploiement Render (réutilise le Dockerfile)
 ├── .dockerignore              # exclut venv/ et .env du contexte de build
 ├── .gitignore                 # exclut venv/, __pycache__/ et .env du dépôt
 ├── .env.example               # template de configuration (le .env réel n'est pas versionné)

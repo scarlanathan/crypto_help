@@ -1,0 +1,65 @@
+# Blueprint Render — déploiement du dashboard crypto.
+#
+#   1. Pousser ce fichier sur GitHub
+#   2. Render > New > Blueprint > sélectionner le dépôt
+#   3. Renseigner les valeurs marquées `sync: false` (secrets SMTP)
+#
+# L'image est construite depuis le Dockerfile existant : aucun changement de
+# code n'est nécessaire côté runtime.
+services:
+  - type: web
+    name: crypto-analyzer
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+
+    # Frankfurt et non les régions US : Binance bloque une grande partie des
+    # plages IP de datacenters américains. Le run Cloudflare est tombé en
+    # fallback sur Kraken, qui ne cote ni BNB/BTC ni SUSHI/USDT -> 2 paires
+    # silencieusement absentes du dashboard.
+    region: frankfurt
+
+    # `free` met le service en veille apres 15 min sans requete HTTP : le
+    # worker de polling est tue et l'etat en memoire repart vide au reveil.
+    # `starter` est le premier palier reellement always-on, indispensable ici
+    # puisque tout l'interet est d'analyser en continu et d'alerter.
+    plan: starter
+
+    healthCheckPath: /api/health
+
+    envVars:
+      # Render injecte $PORT et route le trafic vers lui. settings.py le lit
+      # desormais en priorite sur le defaut 8000.
+      - key: HTTP_HOST
+        value: 0.0.0.0
+
+      - key: POLL_INTERVAL_SECONDS
+        value: "300"
+
+      - key: EXCHANGE_ID
+        value: binance
+
+      - key: WATCHED_SYMBOLS
+        value: BTC/USDT,ETH/USDT,SOL/USDT,BNB/USDT,ADA/USDT,XRP/USDT,DOGE/USDT,AVAX/USDT,SUSHI/USDT,ETH/BTC,BNB/BTC,SOL/ETH
+
+      # --- Alertes mail --------------------------------------------------
+      # `sync: false` = la valeur n'est PAS dans le dépôt, Render la demande
+      # à la création du service et la stocke chiffrée.
+      - key: SMTP_HOST
+        value: smtp.gmail.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: ALERT_TO
+        sync: false
+
+      - key: ALERT_MIN_INTERVAL_SECONDS
+        value: "60"
+
+      # Mettre à 1 pour un premier déploiement : les mails sont écrits dans
+      # les logs Render au lieu d'être envoyés, ce qui permet de valider la
+      # détection de transitions sans risquer de saturer Gmail.
+      - key: ALERT_DRY_RUN
+        value: "0"

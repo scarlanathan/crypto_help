@@ -37,13 +37,20 @@ def _warn_if_unreachable_in_container(host: str) -> None:
     service démarre, le healthcheck passe (il teste depuis l'intérieur), mais
     le port publié ne répond jamais. Sans ce message, le diagnostic est long.
     """
-    in_container = Path("/.dockerenv").exists() or os.environ.get("KUBERNETES_SERVICE_HOST")
-    if in_container and host in ("127.0.0.1", "localhost", "::1"):
+    hosted = (
+        Path("/.dockerenv").exists()
+        or os.environ.get("KUBERNETES_SERVICE_HOST")
+        # Render, Railway, Fly, Heroku… imposent le port via $PORT. Ce cas
+        # manquait : sur Cloudflare le service a demarre sur 127.0.0.1 sans
+        # aucun signal, et la panne ressemblait a un build casse.
+        or os.environ.get("PORT")
+    )
+    if hosted and host in ("127.0.0.1", "localhost", "::1"):
         print(
-            f"ATTENTION: HTTP_HOST={host} dans un conteneur -> le service sera "
-            f"injoignable depuis l'hote malgre le port publie.\n"
-            f"           Corrigez avec -e HTTP_HOST=0.0.0.0 (ou docker compose, "
-            f"qui le force deja).",
+            f"ATTENTION: HTTP_HOST={host} sur un hebergeur distant -> le service "
+            f"sera injoignable de l'exterieur malgre le port publie.\n"
+            f"           Corrigez avec HTTP_HOST=0.0.0.0 (docker compose et "
+            f"render.yaml le forcent deja).",
             flush=True,
         )
 

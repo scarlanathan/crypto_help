@@ -39,6 +39,16 @@ def _env_list(key: str, default: list[str]) -> list[str]:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+def _on_paas() -> bool:
+    """Détecte un hébergeur qui impose le port d'écoute via $PORT.
+
+    Convention partagée par Render, Railway, Fly, Heroku, Cloud Run… Sur ces
+    plateformes le routeur est en frontal : écouter sur 127.0.0.1 rend le
+    service définitivement injoignable, sans la moindre erreur au démarrage.
+    """
+    return bool(_env("PORT"))
+
+
 @dataclass(frozen=True)
 class Settings:
     # Worker
@@ -77,6 +87,11 @@ def load() -> Settings:
         alert_to=_env_list("ALERT_TO", []),
         alert_min_interval=_env_int("ALERT_MIN_INTERVAL_SECONDS", 60),
         alert_dry_run=_env_bool("ALERT_DRY_RUN", False),
-        http_host=_env("HTTP_HOST", "127.0.0.1"),
-        http_port=_env_int("HTTP_PORT", 8000),
+        # Défaut loopback en local (on n'expose rien sans le demander), mais
+        # 0.0.0.0 dès qu'on est sur un PaaS, sinon le routeur frontal ne peut
+        # pas joindre le service. HTTP_HOST explicite l'emporte toujours.
+        http_host=_env("HTTP_HOST", "0.0.0.0" if _on_paas() else "127.0.0.1"),
+        # $PORT est imposé par l'hébergeur et n'est pas négociable : il prime
+        # sur le défaut 8000, mais reste surchargeable par HTTP_PORT explicite.
+        http_port=_env_int("HTTP_PORT", _env_int("PORT", 8000)),
     )
