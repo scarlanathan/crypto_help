@@ -4,21 +4,30 @@ Tourne en background (asyncio.create_task) et :
 1. Pour chaque paire surveillée, appelle `analyze_symbol` (synchrone, ccxt) dans
    un thread pour ne pas bloquer la boucle async du serveur HTTP.
 2. Compare avec l'état précédent → détecte les transitions.
-3. Met à jour le Store + enqueue les mails.
-4. Sleep jusqu'au prochain cycle.
+3. Relit les bougies 1m écoulées pour les paires ayant un signal en cours, afin
+   de savoir si le TP ou le SL a été touché entre deux cycles.
+4. Met à jour le Store + enqueue les mails.
+5. Sleep jusqu'au prochain cycle.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
+from datetime import datetime, timedelta, timezone
 
 from analyze import analyze_symbol
-from fetch import get_exchange
+from fetch import fetch_ohlcv, get_exchange
 from webapp.mailer import Mailer
 from webapp.settings import Settings
-from webapp.state import Store
+from webapp.state import Store, Transition
+
+# Fenêtre max relue en bougies 1m pour le suivi TP/SL (~16 h). Au-delà, le
+# worker a été interrompu assez longtemps pour que la précision à la minute
+# n'apporte plus grand-chose, et on évite de paginer.
+_MAX_TRACKING_BARS = 1000
 
 log = logging.getLogger(__name__)
 
@@ -94,15 +103,68 @@ class Worker:
 
         all_transitions = []
         for sym in valid:
+            # Avant l'analyse : les prix réellement traités depuis le dernier
+            # cycle, pour trancher TP/SL sur les signaux encore en cours.
+            bars = self._tracking_bars(exchange, sym)
             try:
                 result = analyze_symbol(exchange, sym, horizons)
             except Exception as exc:
                 log.warning("Échec analyse %s : %s", sym, exc)
                 continue
-            transitions = self.store.update_pair(sym, result["ticker"], result["signals"])
+            transitions, closed = self.store.update_pair(
+                sym, result["ticker"], result["signals"], bars
+            )
             if transitions:
                 log.info("%s : %d transition(s) détectée(s)", sym, len(transitions))
+            for tr in closed:
+                log.info("%s %s (%s) : %s — %s", sym, tr.horizon, tr.new_action,
+                         tr.outcome, _fmt_pnl(tr))
             all_transitions.extend(transitions)
 
         if all_transitions:
             self.mailer.queue(all_transitions)
+
+    def _tracking_bars(self, exchange, symbol: str) -> list[tuple[datetime, float, float]]:
+        """Bougies 1m `(ts, high, low)` écoulées depuis le dernier contrôle.
+
+        Le worker tourne toutes les `POLL_INTERVAL_SECONDS` (300 s par défaut) :
+        comparer les niveaux au seul prix instantané raterait toute mèche entre
+        deux cycles. On relit donc la minute par minute — mais uniquement pour
+        les paires qui ont un signal en cours (sinon : aucun appel réseau).
+
+        Liste vide en cas d'échec : le Store se rabat alors sur le dernier prix
+        du ticker, moins fin mais jamais bloquant.
+        """
+        since = self.store.tracking_since(symbol)
+        if since is None:
+            return []
+
+        elapsed_s = (datetime.now(timezone.utc) - since).total_seconds()
+        # +2 bougies de marge : `since` tombe au milieu d'une minute (donc la
+        # fenêtre en chevauche une de plus), et `drop_incomplete=False` garde la
+        # minute en cours — sinon on perdrait la fin de fenêtre.
+        limit = min(math.ceil(max(elapsed_s, 0) / 60) + 2, _MAX_TRACKING_BARS)
+        try:
+            df = fetch_ohlcv(exchange, symbol, timeframe="1m", limit=limit,
+                             drop_incomplete=False)
+        except Exception as exc:
+            log.warning("Bougies 1m indisponibles pour %s (%s) — suivi TP/SL "
+                        "sur le dernier prix uniquement.", symbol, exc)
+            return []
+
+        # On garde les bougies dont la clôture est postérieure au dernier
+        # contrôle (celle qui contient `since` incluse : sans elle, la fin de la
+        # minute du contrôle précédent ne serait jamais examinée). Les prix
+        # antérieurs au signal lui-même sont écartés par Transition.check.
+        cutoff = since - timedelta(minutes=1)
+        return [
+            (ts.to_pydatetime(), float(row["high"]), float(row["low"]))
+            for ts, row in df.iterrows()
+            if ts > cutoff
+        ]
+
+
+def _fmt_pnl(tr: Transition) -> str:
+    if tr.pnl_pct is None:
+        return "PnL n/a"
+    return f"PnL {tr.pnl_pct * 100:+.2f}%"

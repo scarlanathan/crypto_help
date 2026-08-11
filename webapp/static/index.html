@@ -73,6 +73,14 @@
   .transition { padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 13px; }
   .transition .ts { color: var(--muted); font-size: 11px; margin-right: 8px; }
   .transition .arrow { color: var(--muted); margin: 0 6px; }
+  /* Issue du signal : TP touché / SL touché / expiré / encore en cours */
+  .outcome { display: inline-block; margin-left: 8px; padding: 2px 8px; border-radius: 4px;
+             font-size: 11px; font-weight: 600; border: 1px solid var(--border); }
+  .outcome.TP      { background: rgba(22, 163, 74, 0.15); color: var(--buy);  border-color: var(--buy); }
+  .outcome.SL      { background: rgba(220, 38, 38, 0.15); color: var(--sell); border-color: var(--sell); }
+  .outcome.TIMEOUT { background: rgba(202, 138, 4, 0.12); color: var(--hold); border-color: var(--hold); }
+  .outcome.OPEN    { color: var(--muted); }
+  .outcome .pnl { font-weight: 500; opacity: 0.9; margin-left: 4px; }
 </style>
 </head>
 <body>
@@ -237,6 +245,26 @@ function renderPairs(snap) {
   }).join('');
 }
 
+// Issue du signal : le TP ou le SL a-t-il été touché depuis ? `outcome` est
+// null pour les transitions non suivies (retour à HOLD : aucun niveau).
+function outcomeHtml(t) {
+  if (!t.outcome) return '';
+  const pnl = t.pnl_pct == null
+    ? ''
+    : `<span class="pnl">${t.pnl_pct >= 0 ? '+' : ''}${(t.pnl_pct * 100).toFixed(2)}%</span>`;
+  if (t.outcome === 'OPEN') {
+    const until = t.expires_at
+      ? ` — suivi jusqu'au ${new Date(t.expires_at).toLocaleString('fr-FR')}`
+      : '';
+    return `<span class="outcome OPEN" title="Ni le TP ni le SL n'ont été touchés${until}">⏳ en cours</span>`;
+  }
+  const label = { TP: '✅ TP touché', SL: '❌ SL touché', TIMEOUT: '⏱ expiré (ni TP ni SL)' }[t.outcome]
+             || t.outcome;
+  const at = t.outcome_ts ? new Date(t.outcome_ts).toLocaleString('fr-FR') : '';
+  const title = `${at}${t.outcome_price != null ? ` @ ${fmtPrice(t.outcome_price)}` : ''}`;
+  return `<span class="outcome ${t.outcome}" title="${title}">${label}${pnl}</span>`;
+}
+
 function renderTransitions(snap) {
   const container = document.getElementById('transitions');
   const list = (snap.recent_transitions || []).slice().reverse();
@@ -251,6 +279,7 @@ function renderTransitions(snap) {
       <span class="badge ${t.previous_action}">${t.previous_action}</span>
       <span class="arrow">→</span>
       <span class="badge ${t.new_action}">${t.new_action}</span>
+      ${outcomeHtml(t)}
       <span style="margin-left:8px; color:var(--muted)">
         score ${(t.score >= 0 ? '+' : '') + t.score.toFixed(2)}, conf ${(t.confidence * 100).toFixed(0)}%
       </span>

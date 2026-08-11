@@ -288,7 +288,7 @@ python backtest.py --symbol SOL/USDT --horizon short --max-bars 30
 Une app FastAPI sert un dashboard temps réel avec :
 
 - **Tableau live** des 12 paires × 3 horizons (prix, Δ 24h, signal coloré, score, confidence visuelle, raisons).
-- **Liste des transitions** récentes (changements `HOLD ↔ BUY/SELL`).
+- **Liste des transitions** récentes (changements `HOLD ↔ BUY/SELL`), avec **l'issue de chaque signal** : TP touché ✅, SL touché ❌, expiré ⏱ ou encore en cours ⏳ (voir plus bas).
 - **Worker en background** qui analyse le marché toutes les `POLL_INTERVAL_SECONDS` (défaut 5 min).
 - **Alertes mail Gmail SMTP** dès qu'une transition est détectée (anti-spam : batching configurable).
 
@@ -419,9 +419,32 @@ Deux protections, à mettre en place **avant** de publier le domaine :
 |---|---|
 | `GET /` | Dashboard HTML auto-rafraîchi toutes les 5 s |
 | `GET /api/snapshot` | État courant complet en JSON (paires + transitions) |
-| `GET /api/transitions?limit=50` | N dernières transitions |
+| `GET /api/transitions?limit=50` | N dernières transitions, avec leur issue (`outcome` : `OPEN` / `TP` / `SL` / `TIMEOUT`, `outcome_ts`, `outcome_price`, `pnl_pct`) |
 | `POST /api/refresh` | Force un cycle d'analyse maintenant |
 | `GET /api/health` | Diagnostic (settings, nb de cycles, dernière erreur) |
+
+### Suivi TP / SL des transitions
+
+Chaque transition vers `BUY` ou `SELL` est **suivie jusqu'à son dénouement** : à chaque cycle, le worker relit les bougies **1 minute** écoulées depuis le dernier contrôle et les confronte au SL et au TP du signal. La liste des transitions affiche donc, pour chaque signal, s'il a fini au TP, au SL, ou s'il est encore en cours.
+
+| Issue | Signification |
+|---|---|
+| ⏳ `OPEN` | Ni le TP ni le SL n'ont été touchés — le signal est encore en cours. |
+| ✅ `TP` | Le take profit a été atteint. Le PnL affiché est celui du niveau TP. |
+| ❌ `SL` | Le stop loss a été atteint. |
+| ⏱ `TIMEOUT` | La durée max de suivi est écoulée sans toucher TP ni SL : sortie au dernier prix connu. |
+| *(rien)* | Transition non suivie : retour à `HOLD`, donc aucun niveau à surveiller. |
+
+Conventions, identiques à celles du backtest (`backtest._simulate_trade`) pour que live et backtest restent comparables :
+
+- **SL prioritaire** si SL et TP sont touchés dans la même fenêtre (hypothèse pessimiste).
+- **Durée max de suivi** = `max_bars` × timeframe de l'horizon, soit **6 h** en court (24 × 15m), **7,5 j** en moyen (45 × 4h), **90 j** en long (90 × 1d).
+- Une nouvelle transition **ne clôture pas** les précédentes : chaque signal vit sa vie jusqu'à son propre TP/SL/TIMEOUT, et plusieurs signaux peuvent être suivis en parallèle sur la même paire.
+- Le **PnL est indicatif** : niveaux exacts, ni frais ni slippage déduits (contrairement au backtest).
+
+Pourquoi les bougies 1m plutôt que le prix instantané : le worker ne tourne que toutes les 5 min par défaut, une mèche qui touche le TP entre deux cycles passerait inaperçue. L'appel n'est fait que pour les paires ayant un signal en cours ; si l'exchange ne répond pas, on retombe sur le dernier prix du ticker (moins fin, jamais bloquant).
+
+L'état de suivi vit **en mémoire** comme le reste : un redémarrage perd les signaux en cours (cf. plan `starter` plus haut).
 
 ### Logique d'alerte mail
 
@@ -467,7 +490,7 @@ crypto_help/
 ├── sentiment.py               # Fear & Greed Index (alternative.me, cache 1h)
 ├── webapp/
 │   ├── settings.py            # config (lecture .env)
-│   ├── state.py               # Store thread-safe + détection de transitions
+│   ├── state.py               # Store thread-safe + détection de transitions + suivi TP/SL
 │   ├── mailer.py              # Gmail SMTP + templates HTML + anti-spam batching
 │   ├── worker.py              # boucle asyncio d'analyse périodique
 │   ├── app.py                 # FastAPI : endpoints REST + lifespan
