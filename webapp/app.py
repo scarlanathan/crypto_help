@@ -3,6 +3,7 @@
 - GET /                  → page HTML (static/index.html)
 - GET /api/snapshot      → snapshot complet (paires, signaux, transitions)
 - GET /api/transitions   → seulement les transitions récentes
+- GET /api/stats         → récap cumulé (TP/SL/TIMEOUT en %) sur TOUTES les transitions
 - POST /api/refresh      → force un cycle d'analyse maintenant
 - GET /api/health        → diagnostic
 """
@@ -86,6 +87,16 @@ async def snapshot() -> JSONResponse:
 async def transitions(limit: int = 50) -> JSONResponse:
     snap = app.state.store.to_dict()
     return JSONResponse(snap["recent_transitions"][-limit:])
+
+
+@app.get("/api/stats")
+async def stats() -> JSONResponse:
+    """Récap des issues (TP / SL / TIMEOUT) en pourcentage.
+
+    Porte sur toutes les transitions détectées depuis le démarrage du worker,
+    pas seulement sur les 50 que `/api/transitions` renvoie par défaut.
+    """
+    return JSONResponse(app.state.store.stats_dict())
 
 
 @app.post("/api/refresh")

@@ -420,6 +420,7 @@ Deux protections, à mettre en place **avant** de publier le domaine :
 | `GET /` | Dashboard HTML auto-rafraîchi toutes les 5 s |
 | `GET /api/snapshot` | État courant complet en JSON (paires + transitions) |
 | `GET /api/transitions?limit=50` | N dernières transitions, avec leur issue (`outcome` : `OPEN` / `TP` / `SL` / `TIMEOUT`, `outcome_ts`, `outcome_price`, `pnl_pct`) |
+| `GET /api/stats` | Récap cumulé : part de TP / SL / expirés en %, taux de réussite et PnL, sur **toutes** les transitions |
 | `POST /api/refresh` | Force un cycle d'analyse maintenant |
 | `GET /api/health` | Diagnostic (settings, nb de cycles, dernière erreur) |
 
@@ -445,6 +446,28 @@ Conventions, identiques à celles du backtest (`backtest._simulate_trade`) pour 
 Pourquoi les bougies 1m plutôt que le prix instantané : le worker ne tourne que toutes les 5 min par défaut, une mèche qui touche le TP entre deux cycles passerait inaperçue. L'appel n'est fait que pour les paires ayant un signal en cours ; si l'exchange ne répond pas, on retombe sur le dernier prix du ticker (moins fin, jamais bloquant).
 
 L'état de suivi vit **en mémoire** comme le reste : un redémarrage perd les signaux en cours (cf. plan `starter` plus haut).
+
+### Récap global des issues
+
+Le panneau **Récap global** du dashboard (et `GET /api/stats`, aussi présent sous la clé `stats` du snapshot) agrège les dénouements de **toutes** les transitions détectées depuis le démarrage du worker — pas seulement les 50 listées sous le récap, ni les 200 gardées en liste. Les compteurs sont incrémentés à la création puis au dénouement de chaque signal, donc le rognage de la liste ne les fausse pas.
+
+| Champ | Calcul |
+|---|---|
+| `transitions` / `tracked` | Toutes les transitions / celles qui ont des niveaux, donc un TP et un SL à toucher |
+| `open` / `closed` | Signaux encore en cours / déjà dénoués |
+| `tp_pct`, `sl_pct`, `timeout_pct` | Part de chaque issue, **en % des transitions clôturées** (somme = 100 %) |
+| `win_rate_pct` | `TP / (TP + SL)` — taux de réussite hors expirés, qui ne tranchent rien |
+| `open_pct` | Part des signaux encore en cours, en % des signaux suivis |
+| `pnl_avg_pct` / `pnl_total_pct` | PnL moyen par signal clôturé / somme des PnL, en points de % |
+| `pnl_best_pct` / `pnl_worst_pct` | Meilleur et pire dénouement |
+
+Les mêmes compteurs sont déclinés par **horizon** (`by_horizon`), par **paire** (`by_symbol`) et par **sens** (`by_action`, BUY/SELL/HOLD), ce qui montre par exemple qu'un horizon court touche plus souvent le SL que le TP alors que le long expire surtout en `TIMEOUT`.
+
+Toute valeur en pourcentage vaut `null` tant que son dénominateur est vide (aucune transition clôturée ⇒ pas de `tp_pct`). Comme le reste de l'état, le récap est **en mémoire** : un redémarrage le remet à zéro.
+
+```powershell
+curl http://127.0.0.1:8000/api/stats
+```
 
 ### Logique d'alerte mail
 

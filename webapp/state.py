@@ -13,6 +13,12 @@ conventions que le backtest (cf. backtest._simulate_trade) :
   90 j en long) — le trade est alors sorti au dernier prix connu ;
 - une nouvelle transition ne clôture PAS les précédentes : chaque signal est
   suivi indépendamment jusqu'à son propre TP/SL/TIMEOUT.
+
+Le store ne garde que les 200 dernières transitions en liste (et n'en expose que
+50 au dashboard). Le récap, lui, est tenu en **compteurs cumulés** mis à jour à
+la création puis au dénouement de chaque transition : il porte donc sur *toutes*
+les transitions vues depuis le démarrage du processus, y compris celles déjà
+sorties de la liste.
 """
 
 from __future__ import annotations
@@ -124,6 +130,122 @@ class Transition:
         }
 
 
+def _pct(part: int, whole: int) -> float | None:
+    """Part en pourcentage, ou None quand il n'y a rien à rapporter."""
+    return round(100 * part / whole, 2) if whole else None
+
+
+@dataclass
+class Bucket:
+    """Compteurs cumulés sur un sous-ensemble de transitions.
+
+    Un bucket ne garde jamais les transitions elles-mêmes, seulement des totaux :
+    le récap reste donc exact même quand les transitions les plus anciennes ont
+    été rognées de `Snapshot.recent_transitions`.
+    """
+    transitions: int = 0    # toutes, y compris les retours à HOLD non suivis
+    tracked: int = 0        # celles qui ont des niveaux, donc un TP/SL à toucher
+    open: int = 0
+    tp: int = 0
+    sl: int = 0
+    timeout: int = 0
+    pnl_sum: float = 0.0            # somme des PnL des transitions clôturées
+    pnl_best: float | None = None
+    pnl_worst: float | None = None
+    first_ts: datetime | None = None
+    last_ts: datetime | None = None
+
+    @property
+    def closed(self) -> int:
+        return self.tp + self.sl + self.timeout
+
+    def record(self, tr: Transition) -> None:
+        """Comptabilise une transition qui vient d'être détectée."""
+        self.transitions += 1
+        if self.first_ts is None:
+            self.first_ts = tr.ts
+        self.last_ts = tr.ts
+        if tr.outcome is not None:      # trackable : OPEN à la création
+            self.tracked += 1
+            self.open += 1
+
+    def record_close(self, tr: Transition) -> None:
+        """Comptabilise le dénouement d'une transition déjà enregistrée."""
+        self.open = max(0, self.open - 1)
+        if tr.outcome == TP:
+            self.tp += 1
+        elif tr.outcome == SL:
+            self.sl += 1
+        elif tr.outcome == TIMEOUT:
+            self.timeout += 1
+        if tr.pnl_pct is not None:
+            self.pnl_sum += tr.pnl_pct
+            self.pnl_best = tr.pnl_pct if self.pnl_best is None else max(self.pnl_best, tr.pnl_pct)
+            self.pnl_worst = tr.pnl_pct if self.pnl_worst is None else min(self.pnl_worst, tr.pnl_pct)
+
+    def to_dict(self) -> dict:
+        closed = self.closed
+        decided = self.tp + self.sl      # hors expirés : TP contre SL, à armes égales
+        return {
+            "transitions": self.transitions,
+            "tracked": self.tracked,
+            "open": self.open,
+            "closed": closed,
+            "tp": self.tp,
+            "sl": self.sl,
+            "timeout": self.timeout,
+            # Répartition des dénouements, en % des transitions clôturées.
+            "tp_pct": _pct(self.tp, closed),
+            "sl_pct": _pct(self.sl, closed),
+            "timeout_pct": _pct(self.timeout, closed),
+            # Taux de réussite TP vs SL seuls (les expirés ne tranchent rien).
+            "win_rate_pct": _pct(self.tp, decided),
+            # Part des signaux encore en cours, en % des signaux suivis.
+            "open_pct": _pct(self.open, self.tracked),
+            # PnL en points de pourcentage, frais non déduits.
+            "pnl_total_pct": round(self.pnl_sum * 100, 2) if closed else None,
+            "pnl_avg_pct": round(self.pnl_sum / closed * 100, 2) if closed else None,
+            "pnl_best_pct": round(self.pnl_best * 100, 2) if self.pnl_best is not None else None,
+            "pnl_worst_pct": round(self.pnl_worst * 100, 2) if self.pnl_worst is not None else None,
+            "first_ts": self.first_ts.isoformat() if self.first_ts else None,
+            "last_ts": self.last_ts.isoformat() if self.last_ts else None,
+        }
+
+
+@dataclass
+class Stats:
+    """Récap de toutes les transitions vues, global et par axe d'analyse."""
+    overall: Bucket = field(default_factory=Bucket)
+    by_horizon: dict[str, Bucket] = field(default_factory=dict)
+    by_symbol: dict[str, Bucket] = field(default_factory=dict)
+    by_action: dict[str, Bucket] = field(default_factory=dict)
+
+    def _buckets(self, tr: Transition) -> list[Bucket]:
+        return [
+            self.overall,
+            self.by_horizon.setdefault(tr.horizon, Bucket()),
+            self.by_symbol.setdefault(tr.symbol, Bucket()),
+            self.by_action.setdefault(tr.new_action, Bucket()),
+        ]
+
+    def record(self, tr: Transition) -> None:
+        for b in self._buckets(tr):
+            b.record(tr)
+
+    def record_close(self, tr: Transition) -> None:
+        for b in self._buckets(tr):
+            b.record_close(tr)
+
+    def to_dict(self) -> dict:
+        by = lambda d: {k: v.to_dict() for k, v in sorted(d.items())}
+        return {
+            "overall": self.overall.to_dict(),
+            "by_horizon": by(self.by_horizon),
+            "by_symbol": by(self.by_symbol),
+            "by_action": by(self.by_action),
+        }
+
+
 @dataclass
 class Snapshot:
     """Données affichables dans le dashboard."""
@@ -131,6 +253,8 @@ class Snapshot:
     pairs: dict = field(default_factory=dict)
     # Dernières transitions détectées (ordre chronologique).
     recent_transitions: list[Transition] = field(default_factory=list)
+    # Récap cumulé sur *toutes* les transitions, pas seulement celles ci-dessus.
+    stats: Stats = field(default_factory=Stats)
     last_cycle_ts: datetime | None = None
     last_cycle_duration_s: float | None = None
     cycle_count: int = 0
@@ -141,6 +265,8 @@ class Snapshot:
         return {
             "pairs": self.pairs,
             "recent_transitions": [t.to_dict() for t in self.recent_transitions[-50:]],
+            "transitions_listed": min(len(self.recent_transitions), 50),
+            "stats": self.stats.to_dict(),
             "last_cycle_ts": self.last_cycle_ts.isoformat() if self.last_cycle_ts else None,
             "last_cycle_duration_s": self.last_cycle_duration_s,
             "cycle_count": self.cycle_count,
@@ -210,6 +336,7 @@ class Store:
             for tr in self._open.get(symbol, []):
                 if tr.check(price_bars, last_price, now):
                     closed.append(tr)
+                    self._snapshot.stats.record_close(tr)
                 else:
                     still_open.append(tr)
             self._last_check[symbol] = now
@@ -237,6 +364,11 @@ class Store:
                     ))
                 self._last_action[key] = new_action
 
+            # Le récap porte sur toutes les transitions, y compris celles qui
+            # sortiront de `recent_transitions` au prochain rognage.
+            for tr in transitions:
+                self._snapshot.stats.record(tr)
+
             still_open.extend(t for t in transitions if t.is_open)
             self._open[symbol] = still_open
 
@@ -259,6 +391,11 @@ class Store:
         with self._lock:
             self._snapshot.error_count += 1
             self._snapshot.last_error = err
+
+    def stats_dict(self) -> dict:
+        """Récap seul — sans les paires ni la liste des transitions."""
+        with self._lock:
+            return self._snapshot.stats.to_dict()
 
     def to_dict(self) -> dict:
         with self._lock:

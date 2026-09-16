@@ -81,6 +81,28 @@
   .outcome.TIMEOUT { background: rgba(202, 138, 4, 0.12); color: var(--hold); border-color: var(--hold); }
   .outcome.OPEN    { color: var(--muted); }
   .outcome .pnl { font-weight: 500; opacity: 0.9; margin-left: 4px; }
+  /* Récap global : tuiles de synthèse + tableaux de répartition */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 1px; background: var(--border); }
+  .tile { background: var(--panel); padding: 12px 16px; }
+  .tile .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .tile .value { font-size: 22px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .tile .sub   { font-size: 11px; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .tile .value.tp  { color: var(--buy); }
+  .tile .value.sl  { color: var(--sell); }
+  .tile .value.to  { color: var(--hold); }
+  .recap-note { padding: 10px 16px; font-size: 11px; color: var(--muted);
+                border-bottom: 1px solid var(--border); }
+  /* Barre TP / SL / expiré : la répartition d'un coup d'œil */
+  .split { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--border); }
+  .split i { display: block; height: 100%; }
+  .split i.tp { background: var(--buy); }
+  .split i.sl { background: var(--sell); }
+  .split i.to { background: var(--hold); }
+  .breakdown h3 { margin: 0; padding: 10px 16px; font-size: 12px; font-weight: 600; color: var(--muted);
+                  border-top: 1px solid var(--border); background: rgba(255,255,255,0.015); }
+  table.recap td.num, table.recap th.num { text-align: right; }
+  .pos { color: var(--buy); } .neg { color: var(--sell); }
 </style>
 </head>
 <body>
@@ -115,7 +137,12 @@
   </section>
 
   <section class="panel">
-    <h2>Transitions récentes (50 dernières)</h2>
+    <h2>Récap global — toutes les transitions suivies</h2>
+    <div id="recap"><div class="empty">Aucune transition pour l'instant.</div></div>
+  </section>
+
+  <section class="panel">
+    <h2>Transitions récentes (50 dernières affichées)</h2>
     <div id="transitions"><div class="empty">Aucune transition pour l'instant.</div></div>
   </section>
 </main>
@@ -287,10 +314,108 @@ function renderTransitions(snap) {
     </div>`).join('');
 }
 
+// ---------- Récap global ----------
+// Les compteurs viennent de `snap.stats` : ils portent sur toutes les
+// transitions détectées depuis le démarrage, pas sur les 50 listées plus bas.
+function fmtPct(v, signed) {
+  if (v == null) return '—';
+  return `${signed && v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+}
+function pctClass(v) {
+  if (v == null) return '';
+  return v >= 0 ? 'pos' : 'neg';
+}
+
+function splitBar(b) {
+  if (!b.closed) return '';
+  const w = n => (100 * n / b.closed).toFixed(2) + '%';
+  return `<div class="split" title="TP ${b.tp} · SL ${b.sl} · expirés ${b.timeout}">
+    <i class="tp" style="width:${w(b.tp)}"></i>
+    <i class="sl" style="width:${w(b.sl)}"></i>
+    <i class="to" style="width:${w(b.timeout)}"></i>
+  </div>`;
+}
+
+function tilesHtml(b) {
+  const tile = (label, value, cls, sub) => `<div class="tile">
+    <div class="label">${label}</div>
+    <div class="value ${cls || ''}">${value}</div>
+    <div class="sub">${sub || ''}</div>
+  </div>`;
+  return `<div class="tiles">
+    ${tile('Transitions', b.transitions,
+           '', `${b.tracked} suivies · ${b.open} en cours`)}
+    ${tile('TP touchés', fmtPct(b.tp_pct), 'tp', `${b.tp} sur ${b.closed} clôturées`)}
+    ${tile('SL touchés', fmtPct(b.sl_pct), 'sl', `${b.sl} sur ${b.closed} clôturées`)}
+    ${tile('Expirés', fmtPct(b.timeout_pct), 'to', `${b.timeout} sans TP ni SL`)}
+    ${tile('Taux de réussite', fmtPct(b.win_rate_pct),
+           b.win_rate_pct == null ? '' : (b.win_rate_pct >= 50 ? 'tp' : 'sl'),
+           `TP vs SL seuls (${b.tp + b.sl})`)}
+    ${tile('PnL moyen', fmtPct(b.pnl_avg_pct, true), pctClass(b.pnl_avg_pct),
+           `cumulé ${fmtPct(b.pnl_total_pct, true)}`)}
+  </div>`;
+}
+
+function breakdownHtml(title, buckets, keyLabel) {
+  const rows = Object.entries(buckets || {});
+  if (rows.length === 0) return '';
+  const body = rows.map(([key, b]) => `<tr>
+    <td><strong>${key}</strong></td>
+    <td class="num">${b.transitions}</td>
+    <td class="num">${b.open}</td>
+    <td class="num">${b.closed}</td>
+    <td class="num" style="color:var(--buy)">${b.tp} <span style="color:var(--muted)">(${fmtPct(b.tp_pct)})</span></td>
+    <td class="num" style="color:var(--sell)">${b.sl} <span style="color:var(--muted)">(${fmtPct(b.sl_pct)})</span></td>
+    <td class="num" style="color:var(--hold)">${b.timeout} <span style="color:var(--muted)">(${fmtPct(b.timeout_pct)})</span></td>
+    <td class="num">${fmtPct(b.win_rate_pct)}</td>
+    <td class="num ${pctClass(b.pnl_avg_pct)}">${fmtPct(b.pnl_avg_pct, true)}</td>
+    <td style="width:110px">${splitBar(b)}</td>
+  </tr>`).join('');
+  return `<div class="breakdown">
+    <h3>${title}</h3>
+    <div style="overflow-x:auto"><table class="recap">
+      <thead><tr>
+        <th>${keyLabel}</th><th class="num">Trans.</th><th class="num">En cours</th>
+        <th class="num">Clôt.</th><th class="num">TP</th><th class="num">SL</th>
+        <th class="num">Expirés</th><th class="num">Réussite</th><th class="num">PnL moy.</th><th></th>
+      </tr></thead>
+      <tbody>${body}</tbody>
+    </table></div>
+  </div>`;
+}
+
+function renderRecap(snap) {
+  const container = document.getElementById('recap');
+  const stats = snap.stats;
+  if (!stats || stats.overall.transitions === 0) {
+    container.innerHTML = '<div class="empty">Aucune transition pour l&rsquo;instant.</div>';
+    return;
+  }
+  const b = stats.overall;
+  const since = b.first_ts ? new Date(b.first_ts).toLocaleString('fr-FR') : '—';
+  const extremes = b.closed
+    ? ` · meilleur <span class="pos">${fmtPct(b.pnl_best_pct, true)}</span>,
+        pire <span class="neg">${fmtPct(b.pnl_worst_pct, true)}</span>`
+    : '';
+  container.innerHTML = `
+    <div class="recap-note">
+      ${b.transitions} transition(s) détectée(s) depuis le ${since}, dont ${b.tracked}
+      avec des niveaux suivis (${b.closed} clôturée(s), ${b.open} en cours).
+      Pourcentages calculés sur l'intégralité des transitions en mémoire,
+      pas seulement sur les 50 listées ci-dessous.${extremes}
+    </div>
+    ${tilesHtml(b)}
+    ${breakdownHtml('Par horizon', stats.by_horizon, 'Horizon')}
+    ${breakdownHtml('Par paire', stats.by_symbol, 'Paire')}
+    ${breakdownHtml('Par sens', stats.by_action, 'Action')}
+  `;
+}
+
 async function tick() {
   const [snap, health] = await Promise.all([fetchSnapshot(), fetchHealth()]);
   if (snap) {
     renderPairs(snap);
+    renderRecap(snap);
     renderTransitions(snap);
   }
   if (health) {
